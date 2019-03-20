@@ -4,7 +4,7 @@ from decimal import Decimal
 
 src={
     "geom":"SHAPE",
-    "table":"SL_FLOWPIPE",
+    "table":"SP_VALVE",
     "server":"192.168.1.53:1433",
     "user":"sa",
     "password":"sa123",
@@ -13,7 +13,7 @@ src={
 
 dist={
     "geom":"geom",
-    "table":"SL_FLOWPIPE",
+    "table":"SP_VALVE",
     "server":"192.168.1.107",
     "port":"9216",
     "user":"postgres",
@@ -33,7 +33,7 @@ def GetType(value):
 
 def pgDDL(columnsRow,tableName):
     ddlStr="create table if not EXISTS "+tableName+"("
-    insertStr="insert into table "+ tableName+"("
+    insertStr="insert into  "+ tableName+"("
     keyList=[]
     keyType=[]
     srid=0
@@ -60,9 +60,9 @@ def pgDDL(columnsRow,tableName):
     insertStr+=",".join(keyList)
     insertStr+=") values"
 
-    createIndex = "create UNIQUE INDEX "+dist["table"]+"_pkey ON "+dist["table"]  +" USING btree(OBJECTID)"
-    createSpatialIndex="create INDEX idx_on_"+dist["table"]+"_geom on "+dist["table"]+" using gist(geom)"
-    return ddlStr,insertStr,createIndex,createSpatialIndex,keyList
+    createIndex = "create UNIQUE INDEX  IF NOT EXISTS "+dist["table"]+"_pkey ON "+dist["table"]  +" USING btree(OBJECTID)"
+    createSpatialIndex="create INDEX IF NOT EXISTS idx_on_"+dist["table"]+"_geom on "+dist["table"]+" using gist(geom)"
+    return ddlStr,insertStr,createIndex,createSpatialIndex,keyList,srid
 
 
 
@@ -76,9 +76,8 @@ with pymssql.connect(src["server"],src["user"],src["password"],src["database"]) 
         else:
             print(colRow)
             print("begin to  ddl in the dist database")
-            ddlStr,insertStr,pkIndx,spatialIndex,keysList=pgDDL(colRow,src["table"])
+            ddlStr,insertStr,pkIndx,spatialIndex,keysList,projectID=pgDDL(colRow,src["table"])
             print(ddlStr)
-            print(insertStr)
             print(pkIndx)
             print(spatialIndex)
             with psycopg2.connect(database=dist["database"],host=dist["server"],port=dist["port"],user=dist["user"],password=dist["password"]) as distCon:
@@ -87,15 +86,48 @@ with pymssql.connect(src["server"],src["user"],src["password"],src["database"]) 
                     distCon.commit()
 
                     srcCursor=srcCon.cursor(as_dict=True)
-                    srcCursor.execute("select * from "+src["table"])
+                    srcCursor.execute("select   *,"+src["geom"]+".STAsText() as geom from "+src["table"])
                     currentRow=srcCursor.fetchone()
+                    counter=1
+                    insertArr=[]
                     while currentRow:
-                        print(currentRow)
+                        # print(currentRow)
                         #form the 100 pieces of  data
+                        item=[]
+                        insertList=[]
+                        for key in keysList:
+                            if key != "geom":
+                                if GetType(currentRow[key])==GetType(str):
+                                    insertList.append(key)
+                                    item.append("\'"+str(currentRow[key])+"\'" if currentRow[key] else "\'\'")
+                                elif GetType(currentRow[key])==GetType(type(None)):
+                                    continue
+                                else:
+                                    insertList.append(key)
+                                    item.append(str(currentRow[key]) if currentRow[key] else "NULL")
+                        # temp=""" %s (%s,ST_GeomFromText(\'%s\',%d))""" % (insertStr,",".join(item),currentRow["geom"],projectID)
+                        temp="""(%s,ST_GeomFromText(\'%s\',%d))""" % (",".join(item),currentRow["geom"],projectID)
+                        # print(temp)
+                        insertArr.append(temp)
                         currentRow=srcCursor.fetchone()
+                        if counter %100==0 or currentRow==None:
+                            insertBatchStr = ",".join(insertArr)
+                            insertBatchStr=insertStr+insertBatchStr
+                            # print(insertBatchStr)
+                            distCursor.execute(insertBatchStr)
 
+                            distCon.commit()
+                            print(counter)
+                            item=[]
+                            insertArr=[]
 
+                            if currentRow == None:
+                                  #no need ,自动建立的
+                                  # distCursor.execute(pkIndx)
 
+                                  distCursor.execute(spatialIndex)
+                        counter+=1
+                #create index
 
 
 
